@@ -13,9 +13,6 @@ import kotlinx.serialization.decodeFromString
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "yggstack_config")
 
-/**
- * What the service should do when the app is opened by the user.
- */
 enum class ServiceStartMode(val value: String) {
     ALWAYS("always"),
     KEEP_STATE("keep_state"),
@@ -23,19 +20,12 @@ enum class ServiceStartMode(val value: String) {
 
     companion object {
         fun fromValue(value: String?): ServiceStartMode = when (value) {
-            // "stopped" is the legacy name of DO_NOTHING from before it was
-            // changed to leave the service alone instead of force-stopping it
             "stopped" -> DO_NOTHING
             else -> entries.firstOrNull { it.value == value } ?: DO_NOTHING
         }
     }
 }
 
-/**
- * How much of the UI is shown. Light hides the advanced Configuration cards
- * (Expose Local Port, Yggdrasil.conf), Power Save's screen-state options and
- * the Diagnostics tab; PRO shows everything.
- */
 enum class UiMode(val value: String) {
     LIGHT("light"),
     PRO("pro");
@@ -45,9 +35,6 @@ enum class UiMode(val value: String) {
     }
 }
 
-/**
- * Repository for managing Yggstack configuration persistence
- */
 class ConfigRepository(private val context: Context) {
 
     private val json = Json {
@@ -138,16 +125,8 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Get configuration as Flow
-     */
     val configFlow: Flow<YggstackConfig> = context.dataStore.data.map { preferences ->
         preferences[CONFIG_SNAPSHOT]?.let { return@map ConfigSerializer.decode(it) }
-        // Fresh-install defaults. Where these differ from YggstackConfig's own
-        // defaults (forward, multicast listen, Power Save) they must stay
-        // here: the data-class defaults also fill fields missing from
-        // snapshots saved by older versions, and changing them there would
-        // switch those features on for existing users.
         YggstackConfig(
             peers = preferences[PEERS_KEY]?.let {
                 json.decodeFromString<List<String>>(it)
@@ -182,64 +161,36 @@ class ConfigRepository(private val context: Context) {
         )
     }
 
-    /**
-     * Save configuration
-     */
     suspend fun saveConfig(config: YggstackConfig) {
         context.dataStore.edit { preferences ->
             preferences[CONFIG_SNAPSHOT] = ConfigSerializer.encode(config)
         }
     }
 
-    /**
-     * Get theme preference
-     */
     val themeFlow: Flow<String> = context.dataStore.data.map { preferences ->
         preferences[THEME_KEY] ?: "system"
     }
 
-    /**
-     * Save theme preference
-     */
     suspend fun saveTheme(theme: String) {
         context.dataStore.edit { preferences ->
             preferences[THEME_KEY] = theme
         }
     }
 
-    /**
-     * Get system colors preference
-     */
     val useSystemColorsFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[USE_SYSTEM_COLORS_KEY] ?: false
     }
 
-    /**
-     * Save system colors preference
-     */
     suspend fun saveUseSystemColors(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[USE_SYSTEM_COLORS_KEY] = enabled
         }
     }
 
-    /**
-     * Light/PRO UI mode (see [UiMode]). Device-local UI preference only — not
-     * part of BackupConfig. Before [resolveUiMode] has stored a choice this
-     * falls back to the same first-run heuristic.
-     */
     val uiModeFlow: Flow<UiMode> = context.dataStore.data.map { preferences ->
         UiMode.fromValue(preferences[UI_MODE_KEY]) ?: defaultUiMode(preferences)
     }
 
-    /**
-     * Stores the initial UI mode once per install and returns the effective
-     * mode. A fresh install starts in Light so a new user meets fewer options;
-     * an install that already has a config (upgrade from a version without
-     * this toggle) keeps the full PRO UI it had. The decision is persisted
-     * right away, since a Light user's very first saved config would
-     * otherwise flip the heuristic to PRO.
-     */
     suspend fun resolveUiMode(): UiMode {
         val preferences = context.dataStore.data.first()
         UiMode.fromValue(preferences[UI_MODE_KEY])?.let { return it }
@@ -254,12 +205,6 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * One-shot gate for the automatic first-launch RTT check: atomically
-     * returns true and marks itself consumed the first time it is called per
-     * install. The check must fire on the first app start only — never again,
-     * even if that first attempt ended up not running the check.
-     */
     suspend fun consumeFirstLaunchRttCheck(): Boolean {
         var shouldRun = false
         context.dataStore.edit { preferences ->
@@ -271,94 +216,56 @@ class ConfigRepository(private val context: Context) {
         return shouldRun
     }
 
-    // PEERS_KEY covers installs from before the config snapshot existed
-    private fun defaultUiMode(preferences: Preferences): UiMode =
-        if (preferences.contains(CONFIG_SNAPSHOT) || preferences.contains(PEERS_KEY)) UiMode.PRO
-        else UiMode.LIGHT
+    private fun defaultUiMode(preferences: Preferences): UiMode = UiMode.PRO
 
-    /**
-     * Get autostart preference
-     */
     val autostartFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[AUTOSTART_KEY] ?: false
     }
 
-    /**
-     * Save autostart preference
-     */
     suspend fun saveAutostart(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[AUTOSTART_KEY] = enabled
         }
     }
 
-    /**
-     * Get the service-on-app-start policy
-     */
     val serviceOnAppStartFlow: Flow<ServiceStartMode> = context.dataStore.data.map { preferences ->
         ServiceStartMode.fromValue(preferences[SERVICE_ON_APP_START_KEY])
     }
 
-    /**
-     * Save the service-on-app-start policy
-     */
     suspend fun saveServiceOnAppStart(mode: ServiceStartMode) {
         context.dataStore.edit { preferences ->
             preferences[SERVICE_ON_APP_START_KEY] = mode.value
         }
     }
 
-    /**
-     * Whether the service session was running the last time it had a chance to
-     * record its state. Read by the "Keep last state" app-start policy to
-     * restore the service after the process was killed without a clean stop
-     * (app update/install, force kill, system kill).
-     */
     val serviceWasRunningFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[SERVICE_WAS_RUNNING_KEY] ?: false
     }
 
-    /**
-     * Persist the service running state (see serviceWasRunningFlow)
-     */
     suspend fun saveServiceWasRunning(running: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[SERVICE_WAS_RUNNING_KEY] = running
         }
     }
 
-    /**
-     * Get auto-update preference
-     */
     val autoUpdateFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[AUTO_UPDATE_KEY] ?: true  // Default to enabled
+        preferences[AUTO_UPDATE_KEY] ?: false
     }
 
-    /**
-     * Save auto-update preference
-     */
     suspend fun saveAutoUpdate(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[AUTO_UPDATE_KEY] = enabled
         }
     }
 
-    /**
-     * Expansion state of the collapsible cards on the Configuration screen,
-     * persisted so it survives app restarts
-     */
     val yggdrasilConfExpandedFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[YGGDRASIL_CONF_EXPANDED] ?: false
+        preferences[YGGDRASIL_CONF_EXPANDED] ?: true
     }
 
     val multicastExpandedFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[MULTICAST_EXPANDED] ?: false
     }
 
-    /**
-     * Countries picked in Peer Discovery's country filter (empty = no
-     * filtering); persisted so it survives app restarts
-     */
     val countryFilterFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
         preferences[COUNTRY_FILTER] ?: emptySet()
     }
@@ -381,68 +288,40 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Get logs enabled preference
-     */
     val logsEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[LOGS_ENABLED] ?: false  // Default to disabled for production
+        preferences[LOGS_ENABLED] ?: false
     }
 
-    /**
-     * Save logs enabled preference
-     */
     suspend fun saveLogsEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[LOGS_ENABLED] = enabled
         }
     }
 
-    /**
-     * Get Ports view mode preference (Compact/Extended)
-     */
     val portsCompactModeFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[PORTS_COMPACT_MODE] ?: false
     }
 
-    /**
-     * Save Ports view mode preference
-     */
     suspend fun savePortsCompactMode(compact: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PORTS_COMPACT_MODE] = compact
         }
     }
 
-    /**
-     * Peers tab sort mode (DiagnosticsViewModel.PEERS_SORT_* constants).
-     * Device-local UI preference only — not part of BackupConfig.
-     */
     val peersSortModeFlow: Flow<String> = context.dataStore.data.map { preferences ->
         preferences[PEERS_SORT_MODE] ?: "default"
     }
 
-    /**
-     * Save Peers tab sort mode preference
-     */
     suspend fun savePeersSortMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PEERS_SORT_MODE] = mode
         }
     }
 
-    /**
-     * Get diagnostics tab preference.
-     */
     val diagnosticsTabFlow: Flow<Int> = context.dataStore.data.map { preferences ->
         (preferences[DIAGNOSTICS_TAB_KEY] ?: 0).coerceIn(0, 4)
     }
 
-    /**
-     * One-time migrations for tabs inserted before "Logs": first "Ports"
-     * (old Logs 2 -> 3), then "Ping" (old Logs 3 -> 4). Called explicitly
-     * instead of writing from inside a flow transformation, where any
-     * collector could trigger a write as a side effect.
-     */
     suspend fun migrateDiagnosticsTabIfNeeded() {
         context.dataStore.edit { preferences ->
             var saved = preferences[DIAGNOSTICS_TAB_KEY] ?: 0
@@ -458,21 +337,12 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Save diagnostics tab preference
-     */
     suspend fun saveDiagnosticsTab(tabIndex: Int) {
         context.dataStore.edit { preferences ->
             preferences[DIAGNOSTICS_TAB_KEY] = tabIndex
         }
     }
 
-    /**
-     * Diagnostics tab order as the tab ids used by DiagnosticsScreen (null =
-     * default order). Device-local UI preference only — deliberately not part
-     * of BackupConfig. A stored value that isn't a permutation of all five
-     * ids (e.g. after a future tab add/remove) is ignored.
-     */
     val diagnosticsTabOrderFlow: Flow<List<Int>?> = context.dataStore.data.map { preferences ->
         preferences[DIAGNOSTICS_TAB_ORDER]?.let { stored ->
             val ids = stored.split(',').mapNotNull { it.trim().toIntOrNull() }
@@ -480,83 +350,52 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Save diagnostics tab order
-     */
     suspend fun saveDiagnosticsTabOrder(order: List<Int>) {
         context.dataStore.edit { preferences ->
             preferences[DIAGNOSTICS_TAB_ORDER] = order.joinToString(",")
         }
     }
 
-    /**
-     * Get the last pinged target address (empty when never used).
-     */
     val pingTargetFlow: Flow<String> = context.dataStore.data.map { preferences ->
         preferences[PING_TARGET_KEY] ?: ""
     }
 
-    /**
-     * Save the last pinged target address.
-     */
     suspend fun savePingTarget(target: String) {
         context.dataStore.edit { preferences ->
             preferences[PING_TARGET_KEY] = target
         }
     }
 
-    /**
-     * Get the last selected ping packet count (0 = infinite).
-     */
     val pingCountFlow: Flow<Int> = context.dataStore.data.map { preferences ->
         preferences[PING_COUNT_KEY] ?: 5
     }
 
-    /**
-     * Save the selected ping packet count.
-     */
     suspend fun savePingCount(count: Int) {
         context.dataStore.edit { preferences ->
             preferences[PING_COUNT_KEY] = count
         }
     }
 
-    /**
-     * Get language preference
-     */
     val languageFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[LANGUAGE_KEY] ?: "en"
+        preferences[LANGUAGE_KEY] ?: "ru"
     }
 
-    /**
-     * Save language preference
-     */
     suspend fun saveLanguage(language: String) {
         context.dataStore.edit { preferences ->
             preferences[LANGUAGE_KEY] = language
         }
     }
 
-    /**
-     * Get "suppress transit traffic warning" preference
-     */
     val suppressTransitWarningFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[SUPPRESS_TRANSIT_WARNING] ?: false
     }
 
-    /**
-     * Save "suppress transit traffic warning" preference
-     */
     suspend fun saveSuppressTransitWarning(suppress: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[SUPPRESS_TRANSIT_WARNING] = suppress
         }
     }
 
-    /**
-     * "Never show the Open-links dialog again" preference; cleared by the
-     * Settings "Show all hidden dialogs again" action.
-     */
     val appLinksDialogSuppressedFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[APP_LINKS_DIALOG_SUPPRESSED] ?: false
     }
@@ -567,19 +406,10 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Generate a new private key (placeholder - will be implemented with yggstack binding)
-     */
     private fun generatePrivateKey(): String {
-        // TODO: Implement actual key generation using yggstack
         return ""
     }
 
-    // ============ Public Peers Cache Management ============
-
-    /**
-     * Get global public peers cache
-     */
     suspend fun getPublicPeersCache(): PublicPeersCache {
         val preferences = context.dataStore.data.first()
         return preferences[PUBLIC_PEERS_CACHE]?.let {
@@ -587,26 +417,17 @@ class ConfigRepository(private val context: Context) {
         } ?: PublicPeersCache()
     }
 
-    /**
-     * Save global public peers cache
-     */
     suspend fun savePublicPeersCache(cache: PublicPeersCache) {
         context.dataStore.edit { preferences ->
             preferences[PUBLIC_PEERS_CACHE] = json.encodeToString(cache)
         }
     }
 
-    /**
-     * Check if public peers cache exists
-     */
     suspend fun hasPublicPeersCache(): Boolean {
         val cache = getPublicPeersCache()
         return cache.peers.isNotEmpty()
     }
 
-    /**
-     * Get sorted peers cache
-     */
     private suspend fun getSortedPeersCache(): SortedPeersCache {
         val preferences = context.dataStore.data.first()
         return preferences[SORTED_PEERS_CACHE]?.let {
@@ -614,17 +435,11 @@ class ConfigRepository(private val context: Context) {
         } ?: SortedPeersCache()
     }
 
-    /**
-     * Get sorted list for specific external IP
-     */
     suspend fun getSortedListForIp(externalIp: String): PeerListForIp? {
         val sortedCache = getSortedPeersCache()
         return sortedCache.sortedByIp[externalIp]
     }
 
-    /**
-     * Save sorted list for specific external IP
-     */
     suspend fun saveSortedListForIp(externalIp: String, peerList: PeerListForIp) {
         val sortedCache = getSortedPeersCache()
         val updatedCache = sortedCache.copy(
@@ -635,35 +450,23 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Get last known external IP (or null if never detected)
-     */
     suspend fun getLastExternalIp(): String? {
         val preferences = context.dataStore.data.first()
         return preferences[LAST_EXTERNAL_IP]
     }
 
-    /**
-     * Save last known external IP
-     */
     suspend fun saveLastExternalIp(ip: String) {
         context.dataStore.edit { preferences ->
             preferences[LAST_EXTERNAL_IP] = ip
         }
     }
 
-    /**
-     * Clear all sorted lists (when global cache is updated)
-     */
     suspend fun clearAllSortedLists() {
         context.dataStore.edit { preferences ->
             preferences.remove(SORTED_PEERS_CACHE)
         }
     }
 
-    /**
-     * Clear all public peers data
-     */
     suspend fun clearAllPublicPeersData() {
         context.dataStore.edit { preferences ->
             preferences.remove(PUBLIC_PEERS_CACHE)
@@ -671,4 +474,3 @@ class ConfigRepository(private val context: Context) {
         }
     }
 }
-
