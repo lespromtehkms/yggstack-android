@@ -32,6 +32,8 @@ data class YggstackConfigParcelable(
     val listenEntries: List<ListenEntry> = emptyList(),
     val groupPasswordEnabled: Boolean,
     val groupPassword: String,
+    val allowedPublicKeysEnabled: Boolean = false,
+    val allowedPublicKeys: List<String> = emptyList(),
     val logLevel: String,
     val maxBackoffEnabled: Boolean,
     val maxBackoff: Int,
@@ -69,6 +71,8 @@ data class YggstackConfigParcelable(
             listenEntries = listenEntries,
             groupPasswordEnabled = groupPasswordEnabled,
             groupPassword = groupPassword,
+            allowedPublicKeysEnabled = allowedPublicKeysEnabled,
+            allowedPublicKeys = allowedPublicKeys,
             logLevel = logLevel,
             maxBackoffEnabled = maxBackoffEnabled,
             maxBackoff = maxBackoff,
@@ -108,6 +112,8 @@ data class YggstackConfigParcelable(
                 listenEntries = config.listenEntries,
                 groupPasswordEnabled = config.groupPasswordEnabled,
                 groupPassword = config.groupPassword,
+                allowedPublicKeysEnabled = config.allowedPublicKeysEnabled,
+                allowedPublicKeys = config.allowedPublicKeys,
                 logLevel = config.logLevel,
                 maxBackoffEnabled = config.maxBackoffEnabled,
                 maxBackoff = config.maxBackoff,
@@ -122,4 +128,3 @@ data class YggstackConfigParcelable(
         }
     }
 }
-
