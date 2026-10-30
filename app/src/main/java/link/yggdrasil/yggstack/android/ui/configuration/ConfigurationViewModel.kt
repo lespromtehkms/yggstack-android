@@ -35,9 +35,6 @@ class ConfigurationViewModel(
     private val _config = MutableStateFlow(YggstackConfig())
     val config: StateFlow<YggstackConfig> = _config.asStateFlow()
 
-    // False until the repository's config has been read at least once; the
-    // pre-load default has no peers, so UI that reacts to "no peers" must
-    // wait for this or it flashes on entry
     private val _configLoaded = MutableStateFlow(false)
     val configLoaded: StateFlow<Boolean> = _configLoaded.asStateFlow()
 
@@ -50,23 +47,16 @@ class ConfigurationViewModel(
     private val _showPrivateKey = MutableStateFlow(false)
     val showPrivateKey: StateFlow<Boolean> = _showPrivateKey.asStateFlow()
 
-    // Pending debounced config persist (see updateConfig)
     private var debouncedPersistJob: kotlinx.coroutines.Job? = null
-
-    // How long after the last text-field edit the config is persisted
     private val PERSIST_DEBOUNCE_MS = 500L
 
-    // First visible item index + pixel offset, restored when the screen
-    // re-enters composition after a bottom-nav tab switch
     private val _scrollPosition = MutableStateFlow(0 to 0)
     val scrollPosition: StateFlow<Pair<Int, Int>> = _scrollPosition.asStateFlow()
 
     private val _pendingDeepLink = MutableStateFlow<PendingDeepLink?>(null)
     val pendingDeepLink: StateFlow<PendingDeepLink?> = _pendingDeepLink.asStateFlow()
 
-    // Expansion state of the collapsible Configuration cards; persisted in
-    // DataStore so it survives app restarts
-    private val _yggdrasilConfExpanded = MutableStateFlow(false)
+    private val _yggdrasilConfExpanded = MutableStateFlow(true)
     val yggdrasilConfExpanded: StateFlow<Boolean> = _yggdrasilConfExpanded.asStateFlow()
 
     private val _multicastExpanded = MutableStateFlow(false)
@@ -76,8 +66,6 @@ class ConfigurationViewModel(
     private val _showTransitTrafficWarning = MutableStateFlow(false)
     val showTransitTrafficWarning: StateFlow<Boolean> = _showTransitTrafficWarning.asStateFlow()
 
-    // Country per configured peer URI, resolved from the public-peers cache;
-    // powers the flag shown next to each peer in the Peers card
     private val _peerCountries = MutableStateFlow<Map<String, String>>(emptyMap())
     val peerCountries: StateFlow<Map<String, String>> = _peerCountries.asStateFlow()
 
@@ -92,28 +80,14 @@ class ConfigurationViewModel(
             serviceBound = true
             android.util.Log.d("ConfigViewModel", "Service bound successfully, service=$yggstackService")
 
-            // Sync initial state immediately and check for state desync
             yggstackService?.let { service ->
                 val isActuallyRunning = service.isRunning.value
                 val hasIpAddress = service.yggdrasilIp.value != null
                 
-                // Check for state desynchronization: service thinks it's running but Go isn't actually running
                 if (isActuallyRunning && !hasIpAddress) {
-                    // This indicates the Go part crashed or was killed without proper cleanup
-                    // The service state says running but there's no IP address
                     android.util.Log.w("ConfigViewModel", "State desync detected: service reports running but no IP address")
-                    // Force state sync - service should handle this internally
                 }
                 
-                // If service isn't running but should be (e.g., after system restart with saved config)
-                // Start it with the current configuration
-                if (!isActuallyRunning && hasIpAddress == false) {
-                    // Check if there's a saved config that indicates we should be running
-                    // This will be handled by the service's onStartCommand when it gets null intent
-                    // UI just needs to reflect the current state
-                }
-                
-                // Set initial state based on actual service state
                 _serviceState.value = when {
                     service.isPowerSaveIdle.value -> ServiceState.PowerSaving
                     isActuallyRunning -> ServiceState.Running
@@ -121,7 +95,6 @@ class ConfigurationViewModel(
                 }
                 _yggdrasilIp.value = service.yggdrasilIp.value
 
-                // Observe service state changes (running + Power Save idle combined)
                 viewModelScope.launch {
                     combine(service.isRunning, service.isPowerSaveIdle) { running, idle -> running to idle }
                         .collect { (running, idle) ->
@@ -133,18 +106,15 @@ class ConfigurationViewModel(
                         }
                 }
                 
-                // Observe transition state to properly disable button during operations
                 viewModelScope.launch {
                     service.isTransitioning.collect { transitioning ->
                         if (transitioning) {
-                            // Don't override - let existing state determine if Starting or Stopping
                             if (_serviceState.value is ServiceState.Stopped || _serviceState.value is ServiceState.PowerSaving) {
                                 _serviceState.value = ServiceState.Starting
                             } else if (_serviceState.value is ServiceState.Running) {
                                 _serviceState.value = ServiceState.Stopping
                             }
                         }
-                        // When transition completes, isRunning observer will update to final state
                     }
                 }
                 
@@ -154,11 +124,9 @@ class ConfigurationViewModel(
                     }
                 }
 
-                // Observe generated private key and save it
                 viewModelScope.launch {
                     service.generatedPrivateKey.collect { key ->
                         if (key != null && _config.value.privateKey.isBlank()) {
-                            // Save the generated key to config
                             updateConfig(_config.value.copy(privateKey = key))
                         }
                     }
@@ -168,9 +136,6 @@ class ConfigurationViewModel(
 
         override fun onServiceDisconnected(name: ComponentName?) {
             android.util.Log.d("ConfigViewModel", "onServiceDisconnected called")
-            // Connectivity dropped, but the binding itself stays registered —
-            // clearing serviceBound here would skip the later unbind and leak
-            // the connection
             yggstackService = null
             _serviceState.value = ServiceState.Stopped
             _yggdrasilIp.value = null
@@ -182,14 +147,12 @@ class ConfigurationViewModel(
         loadConfig()
         bindToService()
 
-        // Load transit warning suppression preference
         viewModelScope.launch {
             repository.suppressTransitWarningFlow.collect { suppressed ->
                 _suppressTransitWarning.value = suppressed
             }
         }
 
-        // Restore collapsible-card expansion states
         viewModelScope.launch {
             repository.yggdrasilConfExpandedFlow.collect { expanded ->
                 _yggdrasilConfExpanded.value = expanded
@@ -204,7 +167,6 @@ class ConfigurationViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        // Flush a pending debounced persist so the last text edits are not lost
         if (debouncedPersistJob?.isActive == true) {
             debouncedPersistJob?.cancel()
             kotlinx.coroutines.runBlocking {
@@ -232,7 +194,6 @@ class ConfigurationViewModel(
             try {
                 context.unbindService(serviceConnection)
             } catch (_: IllegalArgumentException) {
-                // Already unregistered — nothing left to release
             }
         }
     }
@@ -265,7 +226,6 @@ class ConfigurationViewModel(
         val index = currentPeers.indexOf(oldPeer)
         if (index != -1 && newPeer !in currentPeers) {
             currentPeers[index] = newPeer.trim()
-            // Update disabledPeers reference if the edited peer was disabled
             val currentDisabled = _config.value.disabledPeers.toMutableList()
             val disabledIndex = currentDisabled.indexOf(oldPeer)
             if (disabledIndex != -1) {
@@ -281,11 +241,6 @@ class ConfigurationViewModel(
         updateConfig(_config.value.copy(peers = newOrder))
     }
 
-    /**
-     * Re-resolves configured peers' countries from the public-peers cache.
-     * Called when the peer set changes and when Peer Discovery closes (it
-     * may have re-downloaded the cache).
-     */
     fun refreshPeerCountries() {
         viewModelScope.launch {
             val cache = repository.getPublicPeersCache()
@@ -308,411 +263,4 @@ class ConfigurationViewModel(
             val newConfig = _config.value.copy(disabledPeers = currentDisabled)
             updateConfig(newConfig)
             if (_serviceState.value is ServiceState.Running) {
-                yggstackService?.removeLivePeer(peer)
-                yggstackService?.updateLiveConfig(newConfig)
-            }
-        }
-    }
-
-    fun updatePrivateKey(privateKey: String) {
-        updateConfig(_config.value.copy(privateKey = privateKey), debouncePersist = true)
-    }
-
-    fun updateSocksProxy(proxy: String) {
-        updateConfig(_config.value.copy(socksProxy = proxy), debouncePersist = true)
-    }
-
-    fun updateHttpProxy(proxy: String) {
-        updateConfig(_config.value.copy(httpProxy = proxy), debouncePersist = true)
-    }
-
-    fun updateDnsServers(primary: String, secondary: String) {
-        updateConfig(_config.value.copy(dnsServer = primary, dnsServer2 = secondary), debouncePersist = true)
-    }
-
-    fun toggleProxyEnabled() {
-        updateConfig(_config.value.copy(proxyEnabled = !_config.value.proxyEnabled))
-    }
-
-    fun toggleSocksEnabled() {
-        updateConfig(_config.value.copy(socksEnabled = !_config.value.socksEnabled))
-    }
-
-    fun toggleHttpEnabled() {
-        updateConfig(_config.value.copy(httpEnabled = !_config.value.httpEnabled))
-    }
-
-    fun togglePacEnabled() {
-        updateConfig(_config.value.copy(pacEnabled = !_config.value.pacEnabled))
-    }
-
-    fun updatePacIp(ip: String) {
-        if (ip != _config.value.pacIp) {
-            updateConfig(_config.value.copy(pacIp = ip), debouncePersist = true)
-        }
-    }
-
-    fun updatePacPort(port: Int) {
-        if (port in 1..65535 && port != _config.value.pacPort) {
-            updateConfig(_config.value.copy(pacPort = port), debouncePersist = true)
-        }
-    }
-
-    fun setPacAllTraffic(value: Boolean) {
-        if (value != _config.value.pacAllTraffic) {
-            updateConfig(_config.value.copy(pacAllTraffic = value))
-        }
-    }
-
-    fun addExposeMapping(mapping: ExposeMapping) {
-        val currentMappings = _config.value.exposeMappings.toMutableList()
-        currentMappings.add(mapping)
-        updateConfig(_config.value.copy(exposeMappings = currentMappings))
-    }
-
-    fun removeExposeMapping(mapping: ExposeMapping) {
-        val currentMappings = _config.value.exposeMappings.toMutableList()
-        currentMappings.remove(mapping)
-        updateConfig(_config.value.copy(exposeMappings = currentMappings))
-    }
-
-    fun updateExposeMapping(oldMapping: ExposeMapping, newMapping: ExposeMapping) {
-        val currentMappings = _config.value.exposeMappings.toMutableList()
-        val index = currentMappings.indexOf(oldMapping)
-        if (index != -1) {
-            currentMappings[index] = newMapping
-            updateConfig(_config.value.copy(exposeMappings = currentMappings))
-        }
-    }
-
-    fun reorderExposeMappings(newOrder: List<ExposeMapping>) {
-        updateConfig(_config.value.copy(exposeMappings = newOrder))
-    }
-
-    fun toggleExposeMapping(mapping: ExposeMapping) {
-        val newEnabled = !mapping.enabled
-        val newList = _config.value.exposeMappings.map { m ->
-            when {
-                m == mapping -> m.copy(enabled = newEnabled)
-                // When enabling, disable any sibling with the same proto+localIp+localPort
-                newEnabled && m.protocol == mapping.protocol &&
-                        m.localIp == mapping.localIp && m.localPort == mapping.localPort && m.enabled -> {
-                    if (_serviceState.value is ServiceState.Running) {
-                        yggstackService?.enableExposeMapping(m, false)
-                    }
-                    m.copy(enabled = false)
-                }
-                else -> m
-            }
-        }
-        updateConfig(_config.value.copy(exposeMappings = newList))
-        if (_serviceState.value is ServiceState.Running) {
-            yggstackService?.enableExposeMapping(mapping, newEnabled)
-        }
-    }
-
-    fun toggleExposeEnabled() {
-        updateConfig(_config.value.copy(exposeEnabled = !_config.value.exposeEnabled))
-    }
-
-    fun addForwardMapping(mapping: ForwardMapping) {
-        val currentMappings = _config.value.forwardMappings.toMutableList()
-        currentMappings.add(mapping)
-        updateConfig(_config.value.copy(forwardMappings = currentMappings))
-    }
-
-    fun removeForwardMapping(mapping: ForwardMapping) {
-        val currentMappings = _config.value.forwardMappings.toMutableList()
-        currentMappings.remove(mapping)
-        updateConfig(_config.value.copy(forwardMappings = currentMappings))
-    }
-
-    fun updateForwardMapping(oldMapping: ForwardMapping, newMapping: ForwardMapping) {
-        val currentMappings = _config.value.forwardMappings.toMutableList()
-        val index = currentMappings.indexOf(oldMapping)
-        if (index != -1) {
-            currentMappings[index] = newMapping
-            updateConfig(_config.value.copy(forwardMappings = currentMappings))
-        }
-    }
-
-    fun reorderForwardMappings(newOrder: List<ForwardMapping>) {
-        updateConfig(_config.value.copy(forwardMappings = newOrder))
-    }
-
-    fun toggleForwardMapping(mapping: ForwardMapping) {
-        val newEnabled = !mapping.enabled
-        val newList = _config.value.forwardMappings.map { m ->
-            when {
-                m == mapping -> m.copy(enabled = newEnabled)
-                // When enabling, disable any sibling with the same proto+localIp+localPort
-                newEnabled && m.protocol == mapping.protocol &&
-                        m.localIp == mapping.localIp && m.localPort == mapping.localPort && m.enabled -> {
-                    if (_serviceState.value is ServiceState.Running) {
-                        yggstackService?.enableForwardMapping(m, false)
-                    }
-                    m.copy(enabled = false)
-                }
-                else -> m
-            }
-        }
-        updateConfig(_config.value.copy(forwardMappings = newList))
-        if (_serviceState.value is ServiceState.Running) {
-            yggstackService?.enableForwardMapping(mapping, newEnabled)
-        }
-    }
-
-    fun toggleForwardEnabled() {
-        updateConfig(_config.value.copy(forwardEnabled = !_config.value.forwardEnabled))
-    }
-
-    fun setMulticastBeacon(enabled: Boolean) {
-        updateConfig(_config.value.copy(multicastBeacon = enabled))
-    }
-
-    fun setMulticastListen(enabled: Boolean) {
-        updateConfig(_config.value.copy(multicastListen = enabled))
-    }
-
-    fun setListenEnabled(enabled: Boolean) {
-        updateConfig(_config.value.copy(listenEnabled = enabled))
-    }
-
-    fun addListenEntry(entry: ListenEntry) {
-        val current = _config.value.listenEntries.toMutableList()
-        current.add(entry)
-        updateConfig(_config.value.copy(listenEntries = current))
-    }
-
-    fun removeListenEntry(entry: ListenEntry) {
-        val current = _config.value.listenEntries.toMutableList()
-        current.remove(entry)
-        // Removing the last entry also releases the tick — a ticked-but-empty
-        // Listen would silently do nothing
-        updateConfig(_config.value.copy(
-            listenEntries = current,
-            listenEnabled = _config.value.listenEnabled && current.isNotEmpty()
-        ))
-    }
-
-    fun updateListenEntry(oldEntry: ListenEntry, newEntry: ListenEntry) {
-        val current = _config.value.listenEntries.toMutableList()
-        val index = current.indexOf(oldEntry)
-        if (index != -1) {
-            current[index] = newEntry
-            updateConfig(_config.value.copy(listenEntries = current))
-        }
-    }
-
-    fun updateGroupPassword(password: String) {
-        val trimmed = password.trim()
-        val keepEnabled = _config.value.groupPasswordEnabled && trimmed.isNotBlank()
-        updateConfig(
-            _config.value.copy(
-                groupPassword = trimmed,
-                groupPasswordEnabled = keepEnabled
-            ),
-            debouncePersist = true
-        )
-    }
-
-    fun setGroupPasswordEnabled(enabled: Boolean) {
-        val canEnable = _config.value.groupPassword.isNotBlank()
-        updateConfig(_config.value.copy(groupPasswordEnabled = enabled && canEnable))
-    }
-
-    // Log level UI lives on the Diagnostics "Logs" tab now
-    // (DiagnosticsViewModel.setLogSelection).
-
-    fun setYggdrasilConfExpanded(expanded: Boolean) {
-        _yggdrasilConfExpanded.value = expanded
-        viewModelScope.launch {
-            repository.saveYggdrasilConfExpanded(expanded)
-        }
-    }
-
-    fun setMulticastExpanded(expanded: Boolean) {
-        _multicastExpanded.value = expanded
-        viewModelScope.launch {
-            repository.saveMulticastExpanded(expanded)
-        }
-    }
-    
-    fun updateMaxBackoff(seconds: Int) {
-        updateConfig(_config.value.copy(maxBackoff = seconds))
-    }
-
-    fun setMaxBackoffEnabled(enabled: Boolean) {
-        updateConfig(_config.value.copy(maxBackoffEnabled = enabled))
-    }
-
-    fun setPowerSaveEnabled(enabled: Boolean) {
-        updateConfig(_config.value.copy(powerSaveEnabled = enabled))
-    }
-
-    fun setPowerSaveIdleTimeoutSeconds(seconds: Int) {
-        updateConfig(_config.value.copy(powerSaveIdleTimeoutSeconds = seconds.coerceIn(10, 120)))
-    }
-
-    fun setPowerSaveSleepOnPortsIdle(enabled: Boolean) {
-        updateConfig(_config.value.copy(powerSaveSleepOnPortsIdle = enabled))
-    }
-
-    fun setPowerSaveWakeOnPortsActive(enabled: Boolean) {
-        updateConfig(_config.value.copy(powerSaveWakeOnPortsActive = enabled))
-    }
-
-    fun setPowerSaveSleepDuringScreenOff(enabled: Boolean) {
-        updateConfig(_config.value.copy(powerSaveSleepDuringScreenOff = enabled))
-    }
-
-    fun setPowerSaveWakeOnScreenOn(enabled: Boolean) {
-        updateConfig(_config.value.copy(powerSaveWakeOnScreenOn = enabled))
-    }
-
-    fun wakeNow() {
-        yggstackService?.wakeNow()
-    }
-
-    fun toggleShowPrivateKey() {
-        _showPrivateKey.value = !_showPrivateKey.value
-    }
-
-    fun saveScrollPosition(firstVisibleItemIndex: Int, firstVisibleItemScrollOffset: Int) {
-        _scrollPosition.value = firstVisibleItemIndex to firstVisibleItemScrollOffset
-    }
-
-    fun setPendingDeepLink(link: PendingDeepLink) {
-        _pendingDeepLink.value = link
-    }
-
-    fun consumePendingDeepLink() {
-        _pendingDeepLink.value = null
-    }
-
-    fun startService() {
-        val enabledPeerCount = _config.value.peers.filter { it !in _config.value.disabledPeers }.size
-        if (enabledPeerCount > 1 && !_suppressTransitWarning.value) {
-            _showTransitTrafficWarning.value = true
-            return
-        }
-        doStartService()
-    }
-
-    fun confirmStartWithWarning(suppress: Boolean) {
-        _showTransitTrafficWarning.value = false
-        if (suppress) {
-            viewModelScope.launch { repository.saveSuppressTransitWarning(true) }
-        }
-        doStartService()
-    }
-
-    fun dismissTransitWarning() {
-        _showTransitTrafficWarning.value = false
-    }
-
-    private fun doStartService() {
-        android.util.Log.d("ConfigViewModel", "doStartService() called, context=$context, serviceBound=$serviceBound")
-        viewModelScope.launch {
-            _serviceState.value = ServiceState.Starting
-            try {
-                val intent = Intent(context, YggstackService::class.java).apply {
-                    action = YggstackService.ACTION_START
-                    putExtra(
-                        YggstackService.EXTRA_CONFIG,
-                        YggstackConfigParcelable.fromYggstackConfig(_config.value)
-                    )
-                }
-                android.util.Log.d("ConfigViewModel", "Starting foreground service...")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-                android.util.Log.d("ConfigViewModel", "Service start command sent successfully")
-
-                // Add a timeout fallback to ensure state updates if service doesn't notify
-                kotlinx.coroutines.delay(3000)
-                // If still in Starting state after 3 seconds, check if we have an IP (means it started)
-                if (_serviceState.value is ServiceState.Starting) {
-                    if (_yggdrasilIp.value != null) {
-                        // Service started but state wasn't updated, force it
-                        _serviceState.value = ServiceState.Running
-                    } else {
-                        // Service didn't start, reset to stopped
-                        _serviceState.value = ServiceState.Stopped
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("ConfigViewModel", "Error starting service", e)
-                _serviceState.value = ServiceState.Error(e.message ?: "Unknown error")
-                // Fallback to stopped state after error
-                kotlinx.coroutines.delay(2000)
-                _serviceState.value = ServiceState.Stopped
-            }
-        }
-    }
-
-    fun stopService() {
-        android.util.Log.d("ConfigViewModel", "stopService() called, context=$context, serviceBound=$serviceBound")
-        viewModelScope.launch {
-            _serviceState.value = ServiceState.Stopping
-            try {
-                val intent = Intent(context, YggstackService::class.java).apply {
-                    action = YggstackService.ACTION_STOP
-                }
-                android.util.Log.d("ConfigViewModel", "Stopping service...")
-                context.startService(intent)
-                android.util.Log.d("ConfigViewModel", "Service stop command sent successfully")
-
-                // Add a timeout fallback to reset state if service doesn't respond
-                kotlinx.coroutines.delay(3000)
-                if (_serviceState.value is ServiceState.Stopping) {
-                    _serviceState.value = ServiceState.Stopped
-                    _yggdrasilIp.value = null
-                }
-            } catch (e: Exception) {
-                _serviceState.value = ServiceState.Error(e.message ?: "Unknown error")
-                // Fallback to stopped state after error
-                kotlinx.coroutines.delay(2000)
-                _serviceState.value = ServiceState.Stopped
-            }
-        }
-    }
-
-    private fun updateConfig(config: YggstackConfig, debouncePersist: Boolean = false) {
-        // Power Save and always-on inbound are mutually exclusive: exposed
-        // mappings, Listen and multicast announce all require the node to stay
-        // up to accept inbound network connections
-        val finalConfig = if (config.powerSaveEnabled && config.hasAlwaysOnInbound()) {
-            config.copy(powerSaveEnabled = false)
-        } else {
-            config
-        }
-        _config.value = finalConfig
-        // Text fields fire updateConfig on every keystroke; debouncing their
-        // persistence collapses a burst of typing into a single DataStore
-        // write instead of serializing all config lists per character
-        debouncedPersistJob?.cancel()
-        debouncedPersistJob = viewModelScope.launch {
-            if (debouncePersist) {
-                kotlinx.coroutines.delay(PERSIST_DEBOUNCE_MS)
-            }
-            repository.saveConfig(_config.value)
-        }
-    }
-
-    class Factory(
-        private val repository: ConfigRepository,
-        private val context: Context
-    ) : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            if (modelClass.isAssignableFrom(ConfigurationViewModel::class.java)) {
-                return ConfigurationViewModel(repository, context) as T
-            }
-            throw IllegalArgumentException("Unknown ViewModel class")
-        }
-    }
-}
-
+                yggstackService
