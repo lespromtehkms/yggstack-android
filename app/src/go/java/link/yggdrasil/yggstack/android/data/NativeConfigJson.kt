@@ -50,7 +50,15 @@ internal object NativeConfigJson {
                 put("Listen", JsonPrimitive(config.multicastListen))
             }) }
         } else emptyList())
-        fields.putIfAbsent("AllowedPublicKeys", JsonArray(emptyList()))
+        val allowedKeys = if (config.allowedPublicKeysEnabled) {
+            config.allowedPublicKeys
+                .map { it.trim().lowercase() }
+                .filter { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' } }
+                .distinct()
+        } else {
+            emptyList()
+        }
+        fields["AllowedPublicKeys"] = JsonArray(allowedKeys.map(::JsonPrimitive))
         fields["GroupPassword"] = JsonPrimitive(if (config.groupPasswordEnabled) config.groupPassword else "")
         fields.putIfAbsent("IfName", JsonPrimitive("auto"))
         fields.putIfAbsent("IfMTU", JsonPrimitive(65535))
@@ -62,8 +70,6 @@ internal object NativeConfigJson {
     fun sanitize(value: String): String {
         val fields = json.parseToJsonElement(value).jsonObject.toMutableMap()
         fields["PrivateKey"] = JsonPrimitive("***")
-        // An empty GroupPassword means the feature is off — masking it would
-        // fabricate a secret where the console-generated config shows "".
         if ((fields["GroupPassword"] as? JsonPrimitive)?.contentOrNull?.isNotEmpty() == true) {
             fields["GroupPassword"] = JsonPrimitive("***")
         }
