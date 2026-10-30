@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Yggstack</string>
+    <string name="app_name" translatable="false">Иггстэк</string>
 
     <!-- Navigation -->
     <string name="nav_configuration">Configuration</string>
@@ -15,7 +15,9 @@
     <string name="peers_section">Peers</string>
     <string name="add_peer">Add Peer</string>
     <string name="add_custom_peer">Custom Peer</string>
-    <string name="peer_uri_hint">tcp://, tls://, quic://, ws://</string>
+    <string name="peer_uri_hint">tcp://, tls://, quic://, ws://, socks://, sockstls://, http://, httptls://</string>
+    <string name="allowed_public_keys_label" translatable="false">AllowedPublicKeys (Firewall)</string>
+    <string name="allowed_public_keys_hint" translatable="false">64-символьные hex-ключи (по одному на строку)</string>
     <string name="multicast_discovery">Multicast Peer Discovery</string>
     <string name="multicast_discover">Connect to discovered peers</string>
     <string name="multicast_advertise">Announce for incoming connections</string>
@@ -313,4 +315,3 @@
     <string name="automation_stop_label">Stop Yggstack</string>
     <string name="automation_stop_description">Stop the Yggstack service</string>
 </resources>
-
