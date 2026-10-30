@@ -11,20 +11,16 @@ data class YggdrasilSettings(
     val peers: List<String>,
     val multicastBeacon: Boolean,
     val multicastListen: Boolean,
-    // Inbound peering (Listen); defaulted so legacy backups import cleanly.
     val listenEnabled: Boolean = false,
     val listenEntries: List<ListenEntry> = emptyList(),
     val groupPasswordEnabled: Boolean = false,
     val groupPassword: String = "",
+    val allowedPublicKeysEnabled: Boolean = false,
+    val allowedPublicKeys: List<String> = emptyList(),
     val maxBackoffEnabled: Boolean = true,
     val maxBackoff: Int = 5
 )
 
-/**
- * Backup configuration containing exportable settings.
- * When [yggdrasil] is non-null, the backup includes Yggdrasil parameters in addition
- * to Yggstack (proxy / expose / forward) settings.
- */
 @Serializable
 data class BackupConfig(
     val yggdrasil: YggdrasilSettings? = null,
@@ -33,12 +29,6 @@ data class BackupConfig(
     val forward: ForwardSettings
 ) {
     companion object {
-        /**
-         * Create backup from YggstackConfig.
-         * @param includeYggdrasil when true, also backs up peers, listen, multicast, group password and maxBackoff.
-         * @param includePrivateKey when false (with [includeYggdrasil]), the private key is left out:
-         * nothing is serialised for it, and an import keeps the receiving device's own key.
-         */
         fun fromYggstackConfig(
             config: YggstackConfig,
             includeYggdrasil: Boolean = false,
@@ -54,6 +44,8 @@ data class BackupConfig(
                     listenEntries = config.listenEntries,
                     groupPasswordEnabled = config.groupPasswordEnabled,
                     groupPassword = config.groupPassword,
+                    allowedPublicKeysEnabled = config.allowedPublicKeysEnabled,
+                    allowedPublicKeys = config.allowedPublicKeys,
                     maxBackoffEnabled = config.maxBackoffEnabled,
                     maxBackoff = config.maxBackoff
                 ) else null,
@@ -81,20 +73,8 @@ data class BackupConfig(
             )
         }
 
-        /**
-         * Parse backup from TOML string.
-         * Uses a custom line-by-line parser that handles IPv6 addresses and
-         * arbitrary string values without relying on ktoml. The parser is
-         * lenient about unknown keys and sections, so as a guard against
-         * accidentally imported non-backup files (PDF, spreadsheet, random
-         * text) it rejects content with no recognized yggstack section.
-         */
         fun fromToml(tomlString: String): Result<BackupConfig> = runCatching {
-            // ---------- mutable accumulators ----------
-            var section = ""  // "", "yggdrasil", "proxy", "expose", "forward", "expose.mappings", "forward.mappings"
-            // Set once any known section header is seen; the file is rejected
-            // without one. Every backup written by toToml() has at least
-            // [proxy]/[expose]/[forward].
+            var section = ""
             var recognizedSection = false
 
             // yggdrasil
@@ -106,6 +86,8 @@ data class BackupConfig(
             val ygListenEntries = mutableListOf<ListenEntry>()
             var ygGroupPasswordEnabled = false
             var ygGroupPassword = ""
+            var ygAllowedPublicKeysEnabled = false
+            val ygAllowedPublicKeys = mutableListOf<String>()
             var ygMaxBackoffEnabled = true
             var ygMaxBackoff = 5
             var hasYggdrasil = false
@@ -131,7 +113,6 @@ data class BackupConfig(
             var forwardEnabled = false
             val forwardMappings = mutableListOf<ForwardMapping>()
 
-            // current array-of-table entry
             var curLocalPort = 0
             var curLocalIp = "127.0.0.1"
             var curYggPort = 0
@@ -175,7 +156,6 @@ data class BackupConfig(
                 val line = rawLine.trim()
                 if (line.isEmpty() || line.startsWith("#")) continue
 
-                // --- array-of-tables header [[…]] ---
                 if (line.startsWith("[[")) {
                     flushMapping()
                     val headerInner = line.removePrefix("[[").removeSuffix("]]").trim()
@@ -187,7 +167,6 @@ data class BackupConfig(
                     continue
                 }
 
-                // --- standard table header […] ---
                 if (line.startsWith("[")) {
                     flushMapping()
                     section = line.removePrefix("[").removeSuffix("]").trim()
@@ -198,7 +177,6 @@ data class BackupConfig(
                     continue
                 }
 
-                // --- key = value ---
                 val eqIdx = line.indexOf('=')
                 if (eqIdx < 0) continue
                 val key = line.substring(0, eqIdx).trim()
@@ -215,12 +193,12 @@ data class BackupConfig(
                         "multicastBeacon" -> ygMulticastBeacon  = boolVal()
                         "multicastListen" -> ygMulticastListen  = boolVal()
                         "listenEnabled"   -> ygListenEnabled    = boolVal()
-                        // Stored as URI strings ("tcp://0.0.0.0:1234"); malformed
-                        // entries are skipped rather than failing the whole import.
                         "listen"          -> ygListenEntries.addAll(
                             parseTomlStringArray(rawVal).mapNotNull(ListenEntry::fromUri))
                         "groupPasswordEnabled" -> ygGroupPasswordEnabled = boolVal()
                         "groupPassword"  -> ygGroupPassword = strVal()
+                        "allowedPublicKeysEnabled" -> ygAllowedPublicKeysEnabled = boolVal()
+                        "allowedPublicKeys" -> ygAllowedPublicKeys.addAll(parseTomlStringArray(rawVal))
                         "maxBackoffEnabled" -> ygMaxBackoffEnabled = boolVal()
                         "maxBackoff"      -> ygMaxBackoff        = intVal()
                     }
@@ -275,6 +253,8 @@ data class BackupConfig(
                     listenEntries   = ygListenEntries,
                     groupPasswordEnabled = ygGroupPasswordEnabled,
                     groupPassword = ygGroupPassword,
+                    allowedPublicKeysEnabled = ygAllowedPublicKeysEnabled,
+                    allowedPublicKeys = ygAllowedPublicKeys,
                     maxBackoffEnabled = ygMaxBackoffEnabled,
                     maxBackoff      = ygMaxBackoff
                 ) else null,
@@ -285,7 +265,6 @@ data class BackupConfig(
             )
         }
 
-        /** Parse a TOML inline string array: ["a", "b", …] → List<String> */
         private fun parseTomlStringArray(raw: String): List<String> {
             val inner = raw.trim().removePrefix("[").removeSuffix("]")
             if (inner.isBlank()) return emptyList()
@@ -306,15 +285,9 @@ data class BackupConfig(
         }
     }
 
-    /**
-     * Serialise backup to TOML string (manual builder — no external library required).
-     */
     fun toToml(): String = buildString {
         if (yggdrasil != null) {
             appendLine("[yggdrasil]")
-            // Blank key = deliberately excluded from the backup; the line is
-            // omitted so the parser leaves ygPrivateKey empty and applyTo
-            // keeps the importing device's key
             if (yggdrasil.privateKey.isNotBlank()) {
                 appendLine("privateKey = \"${yggdrasil.privateKey.tomlEscape()}\"")
             }
@@ -327,6 +300,9 @@ data class BackupConfig(
             appendLine("listenEnabled = ${yggdrasil.listenEnabled}")
             appendLine("groupPasswordEnabled = ${yggdrasil.groupPasswordEnabled}")
             appendLine("groupPassword = \"${yggdrasil.groupPassword.tomlEscape()}\"")
+            appendLine("allowedPublicKeysEnabled = ${yggdrasil.allowedPublicKeysEnabled}")
+            val allowedKeysToml = yggdrasil.allowedPublicKeys.joinToString(", ") { "\"${it.tomlEscape()}\"" }
+            appendLine("allowedPublicKeys = [$allowedKeysToml]")
             appendLine("maxBackoffEnabled = ${yggdrasil.maxBackoffEnabled}")
             appendLine("maxBackoff = ${yggdrasil.maxBackoff}")
             appendLine()
@@ -377,10 +353,6 @@ data class BackupConfig(
         }
     }
 
-    /**
-     * Apply backup to existing config (merge settings).
-     * Yggdrasil parameters are only overwritten when [yggdrasil] is non-null.
-     */
     fun applyTo(config: YggstackConfig): YggstackConfig {
         val base = config.copy(
             proxyEnabled = proxy.enabled,
@@ -401,8 +373,6 @@ data class BackupConfig(
         )
         return yggdrasil?.let {
             base.copy(
-                // A blank key means the backup was made without it — never
-                // blank the device's key on import
                 privateKey = it.privateKey.ifBlank { config.privateKey },
                 peers = it.peers,
                 multicastBeacon = it.multicastBeacon,
@@ -411,17 +381,14 @@ data class BackupConfig(
                 listenEntries = it.listenEntries,
                 groupPasswordEnabled = it.groupPasswordEnabled,
                 groupPassword = it.groupPassword,
+                allowedPublicKeysEnabled = it.allowedPublicKeysEnabled,
+                allowedPublicKeys = it.allowedPublicKeys,
                 maxBackoffEnabled = it.maxBackoffEnabled,
-                // 5-30s is the range the backoff slider enforces; backups may
-                // carry values outside it (e.g. legacy 0), so clamp on apply.
                 maxBackoff = it.maxBackoff.coerceIn(5, 30)
             )
         } ?: base
     }
 
-    /**
-     * Validate backup configuration
-     */
     fun validate(): Result<Unit> {
         return try {
             expose.mappings.forEach { mapping ->
@@ -452,53 +419,33 @@ data class BackupConfig(
     }
 }
 
-/**
- * Proxy configuration settings
- */
 @Serializable
 data class ProxySettings(
     val enabled: Boolean,
     val socksAddress: String,
-    // Defaulted so legacy backups (JSON or TOML) without an HTTP proxy import cleanly.
     val httpAddress: String = "",
-    // Defaulted so legacy backups made before the per-proxy enable ticks import
-    // cleanly — with only SOCKS on, matching the app's defaults.
     val socksEnabled: Boolean = true,
     val httpEnabled: Boolean = false,
     val dnsServer: String,
-    // Optional failover DNS server; defaulted so legacy backups (which never
-    // carry it) import cleanly as single-server configs.
     val dnsServer2: String = "",
     val pacEnabled: Boolean = false,
-    // Defaulted so legacy backups made before the PAC IP field import cleanly.
     val pacIp: String = "127.0.0.1",
     val pacPort: Int = 8081,
     val pacAllTraffic: Boolean = false
 )
 
-/**
- * Expose configuration settings
- */
 @Serializable
 data class ExposeSettings(
     val enabled: Boolean,
     val mappings: List<ExposeMapping> = emptyList()
 )
 
-/**
- * Forward configuration settings
- */
 @Serializable
 data class ForwardSettings(
     val enabled: Boolean,
     val mappings: List<ForwardMapping> = emptyList()
 )
 
-// TOML string escape helpers. Notes may be multiline, and TOML basic strings
-// cannot contain raw newlines, so control characters are escaped too — keeping
-// every value on one physical line also keeps the line-by-line parser working.
-// Both directions are single-pass so "\\\n" (escaped backslash + \n) round-trips
-// unambiguously, which sequential replaces cannot guarantee.
 private fun String.tomlEscape(): String = buildString {
     for (c in this@tomlEscape) when (c) {
         '\\' -> append("\\\\")
