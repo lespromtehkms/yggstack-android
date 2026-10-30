@@ -1,8 +1,8 @@
 [submodule "lib/yggstack"]
 	path = lib/yggstack
-	url = git@github.com:DrewCyber/yggstack.git
+	url = https://github.com/DrewCyber/yggstack.git
 	branch = develop
 [submodule "lib/yggstack-ng"]
 	path = lib/yggstack-ng
-	url = git@github.com:DrewCyber/yggstack-ng.git
+	url = https://github.com/DrewCyber/yggstack-ng.git
 	branch = main
