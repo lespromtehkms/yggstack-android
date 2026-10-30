@@ -3,21 +3,31 @@ permissions:
   contents: write
 
 on:
+  workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]*'
+      - 'v*'
 
 jobs:
   build-go:
-    name: Build (go engine)
+    name: Build Иггстэк (go engine + custom yggdrasil-go)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # Fetch all history for tags
-          submodules: recursive
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize lib/yggstack submodule over HTTPS
+        run: |
+          git config --file=.gitmodules submodule."lib/yggstack".url https://github.com/DrewCyber/yggstack.git
+          git submodule sync
+          git submodule update --init lib/yggstack
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -40,9 +50,6 @@ jobs:
         run: |
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
-          # Do not use `gomobile init`: it unconditionally installs gobind@latest.
-          # `gomobile bind` only needs this marker directory to exist plus gobind
-          # on PATH (same as what init provides).
           mkdir -p "$(go env GOPATH)/pkg/gomobile"
 
       - name: Install NDK 28.2.13676358
@@ -50,19 +57,28 @@ jobs:
           echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "ndk;28.2.13676358"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> $GITHUB_ENV
 
-      - name: Get version from git tag
+      - name: Get version
         id: get_version
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION=${TAG#v}
-          APP_VERSION="${VERSION}"
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" == "main" || "$REF" == "develop" || "$REF" == "master" ]]; then
+            APP_VERSION="0.5.15.1-alpha2"
+          else
+            APP_VERSION="${REF#v}"
+          fi
           echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_ENV
           echo "version=${APP_VERSION}" >> $GITHUB_OUTPUT
           echo "Building go flavor version: ${APP_VERSION}"
 
-      - name: Build yggstack AAR
+      - name: Build yggstack AAR with lespromtehkms/yggdrasil-go
         run: |
           cd lib/yggstack
+          export GONOPROXY="github.com/lespromtehkms/*"
+          export GONOSUMDB="github.com/lespromtehkms/*"
+          echo "Replacing yggdrasil-go with github.com/lespromtehkms/yggdrasil-go@develop..."
+          go mod edit -replace github.com/yggdrasil-network/yggdrasil-go=github.com/lespromtehkms/yggdrasil-go@develop
+          go mod tidy
+          grep "lespromtehkms/yggdrasil-go" go.mod
           chmod +x mobile/build-android.sh
           echo "Building production AAR with stripped symbols..."
           ./mobile/build-android.sh
@@ -70,6 +86,11 @@ jobs:
           ls -lh android-build/yggstack.aar
           mkdir -p ../../app/libs/
           cp android-build/yggstack.aar ../../app/libs/
+
+      - name: Ensure app name is Иггстэк in all locales
+        run: |
+          sed -i 's|<string name="app_name"[^>]*>.*</string>|<string name="app_name" translatable="false">Иггстэк</string>|g' app/src/main/res/values*/strings.xml
+          sed -i 's|<string name="peer_uri_hint"[^>]*>.*</string>|<string name="peer_uri_hint">tcp://, tls://, quic://, ws://, socks://, sockstls://, http://, httptls://</string>|g' app/src/main/res/values*/strings.xml
 
       - name: Download latest publicnodes.json for bundled asset
         run: |
@@ -83,16 +104,29 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Decode keystore
+      - name: Cache signing keystore
+        uses: actions/cache@v6
+        with:
+          path: release.keystore
+          key: yggstack-alpha2-release-keystore-v1
+
+      - name: Generate signing keystore if missing
         run: |
-          echo "${{ secrets.KEYSTORE_FILE }}" | base64 --decode > ${{ github.workspace }}/release.keystore
+          if [ ! -f "${{ github.workspace }}/release.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "${{ github.workspace }}/release.keystore" \
+              -alias release \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=lespromtehkms, OU=Yggdrasil, O=Yggstack, L=Komsomolsk, S=Khabarovsk, C=RU"
+          fi
 
       - name: Build Release APK (go)
         env:
           KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PASSWORD: android
+          KEY_ALIAS: release
+          KEY_PASSWORD: android
         run: ./gradlew assembleGoRelease
 
       - name: Rename APKs
@@ -100,8 +134,6 @@ jobs:
           VERSION="${{ steps.get_version.outputs.version }}"
           cd app/build/outputs/apk/go/release
 
-          # Rename architecture-specific APKs (names unchanged from the
-          # single-engine era: the go flavor keeps the legacy naming)
           mv app-go-arm64-v8a-release.apk yggstack-${VERSION}-arm64-v8a.apk
           mv app-go-armeabi-v7a-release.apk yggstack-${VERSION}-armeabi-v7a.apk
           mv app-go-x86-release.apk yggstack-${VERSION}-x86.apk
@@ -113,11 +145,13 @@ jobs:
       - name: Upload APKs
         uses: actions/upload-artifact@v7
         with:
-          name: go-apks
-          path: app/build/outputs/apk/go/release/*.apk
+          name: yggstack-alpha2-apks
+          path: app/build/outputs/apk/go/release/yggstack-*.apk
 
-  build-ng:
-    name: Build (ng engine / Rust)
+  release:
+    name: Create release
+    needs: [build-go]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
     steps:
@@ -125,165 +159,20 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v6
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
-
-      - name: Install NDK 28.2.13676358
-        run: |
-          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "ndk;28.2.13676358"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> $GITHUB_ENV
-
-      - name: Set up Rust
-        # Pinned so CI matches local builds (see AGENTS.md toolchain pins).
-        # Bump manually and only to versions published on static.rust-lang.org
-        # (dependabot proposed 1.120.0, which 404s; ignored in dependabot.yml).
-        uses: dtolnay/rust-toolchain@1.98.1
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            lib/yggstack-ng/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('lib/yggstack-ng/**/Cargo.lock') }}
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
-
-      - name: Get version from git tag
-        id: get_version
-        run: |
-          TAG="${{ github.ref_name }}"
-          VERSION=${TAG#v}
-          APP_VERSION="${VERSION}"
-          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_ENV
-          echo "version=${APP_VERSION}" >> $GITHUB_OUTPUT
-          echo "Building ng flavor version: ${APP_VERSION}"
-
-      - name: Build yggstack-ng native libraries
-        run: |
-          cd lib/yggstack-ng
-          for t in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
-            echo "=== $t ==="
-            cargo ndk -t $t -o ../../app/src/ng/jniLibs build -p yggstack-mobile --release
-          done
-          echo "Native libraries built:"
-          find ../../app/src/ng/jniLibs -name "*.so" -exec ls -lh {} \;
-
-      - name: Download latest publicnodes.json for bundled asset
-        run: |
-          curl -fsSL --max-time 15 https://publicpeers.neilalexander.dev/publicnodes.json \
-            -o app/src/main/assets/publicnodes.json \
-          || curl -fsSL --max-time 15 https://peers.yggdrasil.link/publicnodes.json \
-            -o app/src/main/assets/publicnodes.json \
-          || echo "All mirrors unavailable; keeping committed publicnodes.json"
-          echo "Bundled publicnodes.json size: $(wc -c < app/src/main/assets/publicnodes.json) bytes"
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Decode keystore
-        run: |
-          echo "${{ secrets.KEYSTORE_FILE }}" | base64 --decode > ${{ github.workspace }}/release.keystore
-
-      - name: Build Release APK (ng)
-        env:
-          KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleNgRelease
-
-      - name: Rename APKs
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          cd app/build/outputs/apk/ng/release
-
-          # ng flavor APKs carry a -ng name segment to distinguish the Rust engine
-          mv app-ng-arm64-v8a-release.apk yggstack-ng-${VERSION}-arm64-v8a.apk
-          mv app-ng-armeabi-v7a-release.apk yggstack-ng-${VERSION}-armeabi-v7a.apk
-          mv app-ng-x86-release.apk yggstack-ng-${VERSION}-x86.apk
-          mv app-ng-x86_64-release.apk yggstack-ng-${VERSION}-x86_64.apk
-          mv app-ng-universal-release.apk yggstack-ng-${VERSION}-universal.apk
-
-          ls -lh
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v7
-        with:
-          name: ng-apks
-          path: app/build/outputs/apk/ng/release/*.apk
-
-  release:
-    name: Create release
-    needs: [build-go, build-ng]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # Full history for the changelog
 
       - name: Download go APKs
         uses: actions/download-artifact@v8
         with:
-          name: go-apks
-          path: dist
-
-      - name: Download ng APKs
-        uses: actions/download-artifact@v8
-        with:
-          name: ng-apks
+          name: yggstack-alpha2-apks
           path: dist
 
       - name: List release artifacts
         run: ls -lh dist/
 
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get the previous tag
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p')
-
-          if [ -z "$PREVIOUS_TAG" ]; then
-            echo "No previous release tag found, generating full changelog"
-            CHANGELOG_HEADER="Initial release"
-            git log --pretty=format:"- %s (%h)" ${{ github.ref_name }} > changelog_commits.txt
-          else
-            echo "Generating changelog from $PREVIOUS_TAG to ${{ github.ref_name }}"
-            CHANGELOG_HEADER="Changes since ${PREVIOUS_TAG}:"
-            git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..${{ github.ref_name }} > changelog_commits.txt
-          fi
-
-          # Create the full release body
-          cat > release_body.md << 'RELEASE_BODY_END'
-          ### Changelog
-          RELEASE_BODY_END
-
-          echo "${CHANGELOG_HEADER}" >> release_body.md
-          echo "" >> release_body.md
-          cat changelog_commits.txt >> release_body.md
-
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/yggstack-*.apk
-          body_path: release_body.md
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
