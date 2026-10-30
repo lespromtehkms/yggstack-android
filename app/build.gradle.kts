@@ -37,8 +37,6 @@ data class RepoVersionInfo(
 
 fun runCommand(workingDir: File, vararg command: String): String? {
     return try {
-        // providers.exec instead of ProcessBuilder: keeps these git/go
-        // lookups compatible with the Gradle configuration cache
         val output = providers.exec {
             workingDir(workingDir)
             commandLine(*command)
@@ -70,26 +68,6 @@ fun resolveGitRepoVersion(repoDir: File, fallbackRepoUrl: String, preferredTag: 
     return RepoVersionInfo(tag = tag, commit = commit, repoUrl = repoUrl)
 }
 
-fun resolveGoModuleVersion(moduleDir: File, moduleName: String, fallbackRepoUrl: String): RepoVersionInfo {
-    val moduleVersion = Regex("$moduleName\\s+v([^\\s]+)")
-        .find(moduleDir.resolve("go.mod").readText())
-        ?.groupValues
-        ?.get(1)
-
-    val metadata = runCommand(moduleDir, "go", "mod", "download", "-json", "$moduleName@v$moduleVersion")
-    val commit = metadata
-        ?.let { Regex("\"Hash\"\\s*:\\s*\"([0-9a-f]{40})\"").find(it)?.groupValues?.get(1) }
-        ?.take(7)
-
-    return RepoVersionInfo(
-        tag = moduleVersion,
-        commit = commit,
-        repoUrl = fallbackRepoUrl
-    )
-}
-
-// ng flavor: resolve a git dependency (yggdrasil-ng) from Cargo.lock.
-// source lines look like: git+https://github.com/Revertron/Yggdrasil-ng#<40-hex-rev>
 fun resolveCargoGitDependencyVersion(lockFile: File, packageName: String, fallbackRepoUrl: String): RepoVersionInfo {
     if (!lockFile.exists()) return RepoVersionInfo(tag = null, commit = null, repoUrl = fallbackRepoUrl)
     val block = lockFile.readText()
@@ -113,7 +91,7 @@ fun resolveCargoGitDependencyVersion(lockFile: File, packageName: String, fallba
 val appVersionInfo by lazy {
     resolveGitRepoVersion(
         repoDir = rootProject.projectDir,
-        fallbackRepoUrl = "https://github.com/DrewCyber/yggstack-android"
+        fallbackRepoUrl = "https://github.com/lespromtehkms/yggstack-android"
     )
 }
 
@@ -125,10 +103,10 @@ val goYggstackVersionInfo by lazy {
 }
 
 val goYggdrasilVersionInfo by lazy {
-    resolveGoModuleVersion(
-        moduleDir = rootProject.file("lib/yggstack"),
-        moduleName = "github.com/yggdrasil-network/yggdrasil-go",
-        fallbackRepoUrl = "https://github.com/yggdrasil-network/yggdrasil-go"
+    RepoVersionInfo(
+        tag = "0.5.15.1-alpha2",
+        commit = "develop",
+        repoUrl = "https://github.com/lespromtehkms/yggdrasil-go"
     )
 }
 
@@ -147,9 +125,7 @@ val ngYggdrasilVersionInfo by lazy {
     )
 }
 
-// Get version from git tag or environment variable
 fun getVersionName(): String {
-    // Try to get from environment variable (GitHub Actions)
     val envVersion = System.getenv("APP_VERSION")
     if (!envVersion.isNullOrEmpty()) {
         return envVersion
@@ -158,11 +134,9 @@ fun getVersionName(): String {
     return appVersionInfo.versionNameValue
 }
 
-// Calculate versionCode from semantic version (e.g., 1.2.3 -> 10203)
 fun getVersionCode(): Int {
     return try {
         val versionName = getVersionName()
-        // Extract version without commit hash (e.g., "1.2.3-abc123" -> "1.2.3")
         val version = versionName.split("-")[0]
         val parts = version.split(".")
         
@@ -170,9 +144,6 @@ fun getVersionCode(): Int {
             val major = parts[0].toIntOrNull() ?: 0
             val minor = parts[1].toIntOrNull() ?: 0
             val patch = parts[2].toIntOrNull() ?: 0
-            
-            // Calculate: major * 10000 + minor * 100 + patch
-            // Max values: 99.99.99 = 999999
             major * 10000 + minor * 100 + patch
         } else {
             1
@@ -186,7 +157,6 @@ fun getCommitHash(): String {
     return appVersionInfo.commit ?: "unknown"
 }
 
-// Load keystore properties for local builds
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
@@ -196,17 +166,15 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "link.yggdrasil.yggstack.android"
     compileSdk = 37
-    // Must match the NDK installed by CI (.github/workflows/build-release.yml)
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "link.yggdrasil.yggstack.android"
+        applicationId = "link.yggdrasil.yggstack.android.alpha2"
         minSdk = 23
         targetSdk = 34
         versionCode = getVersionCode()
         versionName = getVersionName()
 
-        // Generate BuildConfig fields
         buildConfigField("String", "VERSION_NAME", "\"${getVersionName()}\"")
         buildConfigField("String", "COMMIT_HASH", "\"${getCommitHash()}\"")
         buildConfigField("String", "APP_VERSION_DISPLAY", "\"${appVersionInfo.displayValue}\"")
@@ -215,10 +183,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    // Engine flavors: `go` (gomobile AAR) and `ng` (Rust yggstack-ng).
-    // One codebase; the flavor picks the native engine implementation and
-    // its library. `ng` gets an applicationId suffix so both apps can be
-    // installed side by side.
     flavorDimensions += listOf("engine")
     productFlavors {
         create("go") {
@@ -229,7 +193,7 @@ android {
             buildConfigField("String", "YGGSTACK_VERSION_DISPLAY", "\"${goYggstackVersionInfo.displayValue}\"")
             buildConfigField("String", "YGGSTACK_VERSION_URL", "\"${goYggstackVersionInfo.commitUrl}\"")
             buildConfigField("String", "YGGDRASIL_VERSION_DISPLAY", "\"${goYggdrasilVersionInfo.displayValue}\"")
-            buildConfigField("String", "YGGDRASIL_VERSION_URL", "\"${goYggdrasilVersionInfo.commitUrl}\"")
+            buildConfigField("String", "YGGDRASIL_VERSION_URL", "\"${goYggdrasilVersionInfo.repoUrl}\"")
         }
         create("ng") {
             dimension = "engine"
@@ -243,11 +207,8 @@ android {
         }
     }
 
-    // Signing configuration
     signingConfigs {
         create("release") {
-            // For local builds: use release.keystore in project root with keystore.properties
-            // For GitHub Actions: keystore is decoded from secrets with env variables
             val keystorePath = System.getenv("KEYSTORE_FILE") ?: "../release.keystore"
             val keystoreFile = if (System.getenv("KEYSTORE_FILE") != null) {
                 file(keystorePath)
@@ -279,7 +240,6 @@ android {
                 "proguard-rules.pro"
             )
             
-            // Use signing config if available
             val releaseSigningConfig = signingConfigs.getByName("release")
             if (releaseSigningConfig.storeFile?.exists() == true) {
                 signingConfig = releaseSigningConfig
@@ -312,8 +272,6 @@ android {
         }
     }
 
-    // Disable dependencies info reporting for Google Play policy
-    // (MIUI autostart library uses hidden APIs)
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
@@ -327,22 +285,14 @@ kotlin {
 }
 
 dependencies {
-    // Native engines (one per flavor)
-    // go: gomobile AAR (built from lib/yggstack, committed prebuilt)
     add("goImplementation", files("libs/yggstack.aar"))
-    // ng: Rust .so files live in src/ng/jniLibs (built from lib/yggstack-ng
-    // with cargo-ndk; gitignored), UniFFI Kotlin bindings in src/ng/java;
-    // JNA is required by the UniFFI 0.29 generated bindings
     add("ngImplementation", "net.java.dev.jna:jna:5.14.0@aar")
 
-    // Core Android
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
 
-    // Compose (BOMs since 2025.09 no longer manage the deprecated icons
-    // artifacts, so material-icons-extended carries an explicit pin)
     implementation(libs.activity.compose)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -352,22 +302,12 @@ dependencies {
     implementation(libs.material.icons.extended)
     implementation(libs.navigation.compose)
 
-    // Data & Storage
     implementation(libs.datastore.preferences)
-
-    // Coroutines
     implementation(libs.coroutines.android)
-
-    // Serialization
     implementation(libs.serialization.json)
-
-    // DNS lookup for IP detection fallback
     implementation(libs.dnsjava)
-
-    // MIUI Autostart permission check
     implementation(libs.miui.autostart)
 
-    // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.espresso.core)
@@ -376,4 +316,3 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
 }
-
